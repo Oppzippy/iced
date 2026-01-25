@@ -257,6 +257,7 @@ where
         receiver: mpsc::UnboundedReceiver<Control>,
         error: Option<Error>,
         proxy: Proxy<Message>,
+        is_wayland: bool,
 
         #[cfg(target_arch = "wasm32")]
         is_booted: std::rc::Rc<std::cell::RefCell<bool>>,
@@ -287,6 +288,7 @@ where
         receiver: control_receiver,
         error: None,
         proxy: proxy.clone(),
+        is_wayland,
 
         #[cfg(target_arch = "wasm32")]
         is_booted: std::rc::Rc::new(std::cell::RefCell::new(false)),
@@ -333,7 +335,7 @@ where
             );
 
             #[cfg(feature = "wayland")]
-            {
+            if self.is_wayland {
                 if matches!(event, WindowEvent::RedrawRequested) {
                     for id in
                         crate::subsurface_widget::subsurface_ids(window_id)
@@ -638,7 +640,7 @@ where
                             }
                             Control::Winit(id, e) => {
                                 #[cfg(feature = "wayland")]
-                                {
+                                if self.is_wayland {
                                     if matches!(e, WindowEvent::RedrawRequested)
                                     {
                                         for id in crate::subsurface_widget::subsurface_ids(id) {
@@ -1107,12 +1109,14 @@ async fn run_instance<'a, P, C>(
                     resize_border,
                 );
                 #[cfg(feature = "wayland")]
-                platform_specific_handler.send_wayland(
-                    platform_specific::Action::TrackWindow(
-                        window.raw.clone(),
-                        id,
-                    ),
-                );
+                if is_wayland {
+                    platform_specific_handler.send_wayland(
+                        platform_specific::Action::TrackWindow(
+                            window.raw.clone(),
+                            id,
+                        ),
+                    );
+                }
                 #[cfg(feature = "a11y")]
                 {
                     use crate::a11y::*;
@@ -1210,6 +1214,7 @@ async fn run_instance<'a, P, C>(
                     &mut ui_caches,
                     &mut is_window_opening,
                     &mut platform_specific_handler,
+                    is_wayland,
                 );
                 if exited {
                     runtime.track(None.into_iter());
@@ -1251,9 +1256,10 @@ async fn run_instance<'a, P, C>(
 
                         // XX must force update to corner radius before the surface is committed.
                         #[cfg(feature = "wayland")]
-                        if window.viewport_version
+                        if (window.viewport_version
                             != window.state.viewport_version()
-                            || window.size() != window.state.logical_size()
+                            || window.size() != window.state.logical_size())
+                            && is_wayland
                         {
                             platform_specific_handler.send_wayland(
                                 platform_specific::Action::ResizeWindow(id),
@@ -1530,6 +1536,7 @@ async fn run_instance<'a, P, C>(
                                 &mut ui_caches,
                                 &mut is_window_opening,
                                 &mut platform_specific_handler,
+                                is_wayland,
                             );
                         } else {
                             window.state.update(
@@ -1581,11 +1588,13 @@ async fn run_instance<'a, P, C>(
                     });
                     let no_window_events = window_events.is_empty();
                     #[cfg(feature = "wayland")]
-                    window_events.push(core::Event::PlatformSpecific(
-                        core::event::PlatformSpecific::Wayland(
-                            core::event::wayland::Event::RequestResize,
-                        ),
-                    ));
+                    if is_wayland {
+                        window_events.push(core::Event::PlatformSpecific(
+                            core::event::PlatformSpecific::Wayland(
+                                core::event::wayland::Event::RequestResize,
+                            ),
+                        ));
+                    }
                     let (ui_state, statuses) = user_interfaces
                         .get_mut(&id)
                         .expect("Get user interface")
@@ -2072,6 +2081,7 @@ fn run_action<P, C>(
     ui_caches: &mut FxHashMap<window::Id, user_interface::Cache>,
     is_window_opening: &mut bool,
     platform_specific: &mut crate::platform_specific::PlatformSpecific,
+    is_wayland: bool,
 ) -> bool
 where
     P: Program,
@@ -2121,8 +2131,11 @@ where
                 let _ = ui_caches.remove(&id);
                 let _ = interfaces.remove(&id);
                 #[cfg(feature = "wayland")]
-                platform_specific
-                    .send_wayland(platform_specific::Action::RemoveWindow(id));
+                if is_wayland {
+                    platform_specific.send_wayland(
+                        platform_specific::Action::RemoveWindow(id),
+                    );
+                }
 
                 if let Some(window) = window_manager.remove(id) {
                     clipboard.register_dnd_destination(
